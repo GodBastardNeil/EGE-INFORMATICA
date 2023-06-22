@@ -1,0 +1,1511 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 13.3 (Debian 13.3-1.pgdg100+1)
+-- Dumped by pg_dump version 13.3 (Debian 13.3-1.pgdg100+1)
+
+-- Started on 2021-07-10 15:01:45 +04
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- TOC entry 222 (class 1255 OID 16559)
+-- Name: appointment_test(integer, text); Type: PROCEDURE; Schema: public; Owner: ege
+--
+
+CREATE PROCEDURE public.appointment_test(idt integer, login text)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+	INSERT INTO назначенные_тесты (лог_получатель, idтест, idстатус_теста)
+	VALUES (login, idt, 1);
+END;
+$$;
+
+
+ALTER PROCEDURE public.appointment_test(idt integer, login text) OWNER TO ege;
+
+--
+-- TOC entry 223 (class 1255 OID 16560)
+-- Name: check_user(text, text); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.check_user(login text, pas text) RETURNS TABLE("логин" text, "роль" text)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+	return query
+	select a.логин, b.название
+		from пользователь a, роль b
+		where a.логин = login
+				and a.пароль = pas
+				and a.idроль = b.idроль;
+END;
+$$;
+
+
+ALTER FUNCTION public.check_user(login text, pas text) OWNER TO ege;
+
+--
+-- TOC entry 224 (class 1255 OID 16561)
+-- Name: create_do_test(text, integer); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.create_do_test(login text, idt integer) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+		last_id integer;
+BEGIN
+	INSERT INTO список_тестов (лог_получатель, idтест) 
+	VALUES (login, idt) RETURNING idсписок_тестов INTO last_id;
+
+	UPDATE статистика_ученика
+	SET кол_во_тестов = кол_во_тестов+1 
+	WHERE логин = login;
+
+	return last_id;
+END;
+$$;
+
+
+ALTER FUNCTION public.create_do_test(login text, idt integer) OWNER TO ege;
+
+--
+-- TOC entry 225 (class 1255 OID 16562)
+-- Name: create_test(text, integer, integer); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.create_test(login text, n integer, "id_тип" integer) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+		last_id integer;
+BEGIN
+	INSERT INTO тест (лог_создатель, idтип_теста, кол_во_заданий) 
+	VALUES (login, id_тип, n) RETURNING idтест INTO last_id;
+
+	return last_id;
+END;
+$$;
+
+
+ALTER FUNCTION public.create_test(login text, n integer, "id_тип" integer) OWNER TO ege;
+
+--
+-- TOC entry 237 (class 1255 OID 16563)
+-- Name: get_do_test(text); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.get_do_test(login text) RETURNS TABLE("idтест" integer, "статус" text, "задания" text)
+    LANGUAGE plpgsql
+    AS $$
+declare
+	teacher_log text;
+BEGIN
+	teacher_log := (select лог_преподаватель from класс where лог_ученик = login);
+	
+	return query
+	select a.idтест, c.название, string_agg(b.название, '<br>') as задание
+	from назначенные_тесты a, тип_задания b, статус_теста c
+	where a.лог_получатель = login
+			AND NOT (login = (select лог_создатель from тест d where d.idтест = a.idтест))
+			AND a.idстатус_теста = c.idстатус_теста
+			AND b.idтип_задания IN (select idтип_задания
+									 from тип_задания
+									 where idтип_задания IN (select idтип_задания
+															 from вариант_задания
+															 where idвариант_задания IN (select idвариант_задания
+																						 from вопрос
+																						 where idвопрос IN (select idвопрос
+																											 from задание
+																											 where idзадание IN (select idзадание
+																																 from список_заданий e
+																																 where e.idтест = a.idтест)))))
+	 group by a.idтест, a.лучший_результат, c.название;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_do_test(login text) OWNER TO ege;
+
+--
+-- TOC entry 238 (class 1255 OID 16564)
+-- Name: get_main_stat(text); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.get_main_stat(login text) RETURNS TABLE(_max double precision, _min double precision, _sred double precision)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+		kol int;
+		kol_ex int;
+BEGIN
+	kol :=
+		(select кол_во_тестов
+		 from статистика_ученика
+		 where логин = login);
+
+	return query
+	select MAX(a.балл::double precision/b.макс_балл),
+			MIN(a.балл::double precision/b.макс_балл),
+			SUM(a.балл::double precision/b.макс_балл)/kol
+	FROM список_тестов a, тест b
+	WHERE a.лог_получатель = login AND a.idтест = b.idтест;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_main_stat(login text) OWNER TO ege;
+
+--
+-- TOC entry 239 (class 1255 OID 16565)
+-- Name: get_right_ans(integer); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.get_right_ans(idt integer) RETURNS TABLE("idзадание" integer, "правильный_ответ" text)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+	return query
+	select a.idзадание, b.правильный_ответ
+	from список_заданий a, задание b
+	where a.idтест = idt
+			AND a.idзадание = b.idзадание
+	ORDER BY номер;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_right_ans(idt integer) OWNER TO ege;
+
+--
+-- TOC entry 240 (class 1255 OID 16566)
+-- Name: get_stat_test(text); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.get_stat_test(login text) RETURNS TABLE("idтест" integer, "лог_создатель" text, "отношение" text, "баллы" text)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+	return query
+	select a.idтест,
+			b.лог_создатель,
+			concat(c.лучший_результат::text, '/', b.макс_балл::text) as отношение,
+			string_agg(a.балл::text, ', ')
+	from список_тестов a, тест b, назначенные_тесты c
+	where a.лог_получатель = login
+		AND a.idтест = b.idтест AND a.idтест = c.idтест
+	group by a.idтест, b.лог_создатель, c.лучший_результат, b.макс_балл order by a.idтест;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_stat_test(login text) OWNER TO ege;
+
+--
+-- TOC entry 241 (class 1255 OID 16567)
+-- Name: get_tasks(integer); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.get_tasks(idt integer) RETURNS TABLE("текст" text)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+	return query
+	select b.текст
+	from список_заданий a, задание b
+	where a.idтест = idt
+			AND a.idзадание = b.idзадание
+	ORDER BY номер;
+END;
+$$;
+
+
+ALTER FUNCTION public.get_tasks(idt integer) OWNER TO ege;
+
+--
+-- TOC entry 242 (class 1255 OID 16568)
+-- Name: include_ex_to_test(integer, integer, integer); Type: PROCEDURE; Schema: public; Owner: ege
+--
+
+CREATE PROCEDURE public.include_ex_to_test(idt integer, idex integer, num integer)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+	INSERT INTO список_заданий (idзадание, idтест, номер)
+	VALUES (idex, idt, num);
+    
+    UPDATE тест
+	SET макс_балл = макс_балл+(select макс_балл from задание where idзадание = idex)
+	WHERE idтест = idt;
+END;
+$$;
+
+
+ALTER PROCEDURE public.include_ex_to_test(idt integer, idex integer, num integer) OWNER TO ege;
+
+--
+-- TOC entry 243 (class 1255 OID 16569)
+-- Name: include_exersize(integer, text, text); Type: FUNCTION; Schema: public; Owner: ege
+--
+
+CREATE FUNCTION public.include_exersize(idv integer, _text text, ans text) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+		last_id integer;
+BEGIN
+	INSERT INTO задание (idвопрос, текст, правильный_ответ, макс_балл)
+	VALUES (idv, _text, ans, (select макс_балл
+							 from тип_задания
+							 where idтип_задания = (select idтип_задания
+													 from вариант_задания
+													 where idвариант_задания = (select idвариант_задания
+																				 from вопрос
+																				 where idвопрос = 1))))
+	RETURNING idзадание INTO last_id;
+
+	return last_id;
+END;
+$$;
+
+
+ALTER FUNCTION public.include_exersize(idv integer, _text text, ans text) OWNER TO ege;
+
+--
+-- TOC entry 244 (class 1255 OID 16570)
+-- Name: set_ball_to_ex(integer, integer, text, integer); Type: PROCEDURE; Schema: public; Owner: ege
+--
+
+CREATE PROCEDURE public.set_ball_to_ex(id_dt integer, idex integer, ans text, b integer)
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+	INSERT INTO список_ответов (idсписок_тестов, idзадание, балл, ответ_пользователя) 
+	VALUES (id_dt, idex, b, ans);
+END;
+$$;
+
+
+ALTER PROCEDURE public.set_ball_to_ex(id_dt integer, idex integer, ans text, b integer) OWNER TO ege;
+
+--
+-- TOC entry 245 (class 1255 OID 16571)
+-- Name: set_ball_to_test(text, integer, integer); Type: PROCEDURE; Schema: public; Owner: ege
+--
+
+CREATE PROCEDURE public.set_ball_to_test(login text, id_do_t integer, idt integer)
+    LANGUAGE plpgsql
+    AS $$
+declare
+	is_prop text;
+	ball int;
+	max_ball int;
+BEGIN
+	ball :=
+		(select SUM(балл)
+		 from список_ответов
+		 where idсписок_тестов = id_do_t);
+	max_ball :=
+		(select лучший_результат
+		 from назначенные_тесты
+		 where idтест = idt);
+    
+    is_prop :=
+		(select string_agg(ответ_пользователя, '')
+		 from список_ответов
+		 where idсписок_тестов = id_do_t);
+		 
+		 
+	UPDATE список_тестов
+	SET балл = ball
+	WHERE idсписок_тестов = id_do_t;
+	
+	UPDATE назначенные_тесты
+	SET idстатус_теста = 2
+	WHERE idтест = idt;
+		 
+	if (ball > max_ball) then
+		UPDATE назначенные_тесты
+		SET лучший_результат = ball
+		WHERE idтест = idt;
+    end if;
+    
+    if (is_prop = '') then
+		UPDATE статистика_ученика
+		SET кол_во_пропущенных_тестов = кол_во_пропущенных_тестов+1
+		WHERE логин = login;
+    end if;
+END;
+$$;
+
+
+ALTER PROCEDURE public.set_ball_to_test(login text, id_do_t integer, idt integer) OWNER TO ege;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- TOC entry 200 (class 1259 OID 16572)
+-- Name: вариант_задания; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."вариант_задания" (
+    "idвариант_задания" integer NOT NULL,
+    "idтип_задания" integer NOT NULL,
+    "название" text NOT NULL
+);
+
+
+ALTER TABLE public."вариант_задания" OWNER TO ege;
+
+--
+-- TOC entry 201 (class 1259 OID 16578)
+-- Name: вариант_задания_idвариант_задани_seq; Type: SEQUENCE; Schema: public; Owner: ege
+--
+
+CREATE SEQUENCE public."вариант_задания_idвариант_задани_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public."вариант_задания_idвариант_задани_seq" OWNER TO ege;
+
+--
+-- TOC entry 3113 (class 0 OID 0)
+-- Dependencies: 201
+-- Name: вариант_задания_idвариант_задани_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: ege
+--
+
+ALTER SEQUENCE public."вариант_задания_idвариант_задани_seq" OWNED BY public."вариант_задания"."idвариант_задания";
+
+
+--
+-- TOC entry 202 (class 1259 OID 16580)
+-- Name: вопрос; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."вопрос" (
+    "idвопрос" integer NOT NULL,
+    "idвариант_задания" integer NOT NULL,
+    "название" text,
+    "текст" text NOT NULL
+);
+
+
+ALTER TABLE public."вопрос" OWNER TO ege;
+
+--
+-- TOC entry 203 (class 1259 OID 16586)
+-- Name: вопрос_idвопрос_seq; Type: SEQUENCE; Schema: public; Owner: ege
+--
+
+CREATE SEQUENCE public."вопрос_idвопрос_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public."вопрос_idвопрос_seq" OWNER TO ege;
+
+--
+-- TOC entry 3114 (class 0 OID 0)
+-- Dependencies: 203
+-- Name: вопрос_idвопрос_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: ege
+--
+
+ALTER SEQUENCE public."вопрос_idвопрос_seq" OWNED BY public."вопрос"."idвопрос";
+
+
+--
+-- TOC entry 204 (class 1259 OID 16588)
+-- Name: задание; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."задание" (
+    "idзадание" integer NOT NULL,
+    "idвопрос" integer NOT NULL,
+    "название" text,
+    "правильный_ответ" text NOT NULL,
+    "текст" text NOT NULL,
+    "макс_балл" integer NOT NULL
+);
+
+
+ALTER TABLE public."задание" OWNER TO ege;
+
+--
+-- TOC entry 205 (class 1259 OID 16594)
+-- Name: задание_idзадание_seq; Type: SEQUENCE; Schema: public; Owner: ege
+--
+
+CREATE SEQUENCE public."задание_idзадание_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public."задание_idзадание_seq" OWNER TO ege;
+
+--
+-- TOC entry 3115 (class 0 OID 0)
+-- Dependencies: 205
+-- Name: задание_idзадание_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: ege
+--
+
+ALTER SEQUENCE public."задание_idзадание_seq" OWNED BY public."задание"."idзадание";
+
+
+--
+-- TOC entry 206 (class 1259 OID 16596)
+-- Name: класс; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."класс" (
+    "лог_преподаватель" text NOT NULL,
+    "лог_ученик" text NOT NULL
+);
+
+
+ALTER TABLE public."класс" OWNER TO ege;
+
+--
+-- TOC entry 207 (class 1259 OID 16602)
+-- Name: назначенные_тесты; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."назначенные_тесты" (
+    "лог_получатель" text NOT NULL,
+    "idтест" integer NOT NULL,
+    "idстатус_теста" integer NOT NULL,
+    "лучший_результат" integer DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE public."назначенные_тесты" OWNER TO ege;
+
+--
+-- TOC entry 208 (class 1259 OID 16609)
+-- Name: пользователь; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."пользователь" (
+    "логин" text NOT NULL,
+    "пароль" text NOT NULL,
+    "фио" text NOT NULL,
+    "idроль" integer NOT NULL
+);
+
+
+ALTER TABLE public."пользователь" OWNER TO ege;
+
+--
+-- TOC entry 209 (class 1259 OID 16615)
+-- Name: роль; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."роль" (
+    "idроль" integer NOT NULL,
+    "название" text NOT NULL
+);
+
+
+ALTER TABLE public."роль" OWNER TO ege;
+
+--
+-- TOC entry 210 (class 1259 OID 16621)
+-- Name: список_заданий; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."список_заданий" (
+    "idзадание" integer NOT NULL,
+    "idтест" integer NOT NULL,
+    "номер" integer NOT NULL
+);
+
+
+ALTER TABLE public."список_заданий" OWNER TO ege;
+
+--
+-- TOC entry 211 (class 1259 OID 16624)
+-- Name: список_заявок; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."список_заявок" (
+    "лог_преподаватель" text NOT NULL,
+    "лог_ученик" text NOT NULL
+);
+
+
+ALTER TABLE public."список_заявок" OWNER TO ege;
+
+--
+-- TOC entry 212 (class 1259 OID 16630)
+-- Name: список_ответов; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."список_ответов" (
+    "idсписок_тестов" integer NOT NULL,
+    "idзадание" integer NOT NULL,
+    "балл" integer NOT NULL,
+    "ответ_пользователя" text NOT NULL
+);
+
+
+ALTER TABLE public."список_ответов" OWNER TO ege;
+
+--
+-- TOC entry 213 (class 1259 OID 16636)
+-- Name: тип_задания; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."тип_задания" (
+    "idтип_задания" integer NOT NULL,
+    "название" text NOT NULL,
+    "макс_балл" integer NOT NULL,
+    "теория" text NOT NULL
+);
+
+
+ALTER TABLE public."тип_задания" OWNER TO ege;
+
+--
+-- TOC entry 214 (class 1259 OID 16642)
+-- Name: тип_задания_idтип_задания_seq; Type: SEQUENCE; Schema: public; Owner: ege
+--
+
+CREATE SEQUENCE public."тип_задания_idтип_задания_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public."тип_задания_idтип_задания_seq" OWNER TO ege;
+
+--
+-- TOC entry 3116 (class 0 OID 0)
+-- Dependencies: 214
+-- Name: тип_задания_idтип_задания_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: ege
+--
+
+ALTER SEQUENCE public."тип_задания_idтип_задания_seq" OWNED BY public."тип_задания"."idтип_задания";
+
+
+--
+-- TOC entry 215 (class 1259 OID 16644)
+-- Name: список_тестов; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."список_тестов" (
+    "idсписок_тестов" integer DEFAULT nextval('public."тип_задания_idтип_задания_seq"'::regclass) NOT NULL,
+    "лог_получатель" text NOT NULL,
+    "idтест" integer NOT NULL,
+    "балл" integer DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE public."список_тестов" OWNER TO ege;
+
+--
+-- TOC entry 216 (class 1259 OID 16652)
+-- Name: статистика_ученика; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."статистика_ученика" (
+    "логин" text NOT NULL,
+    "кол_во_тестов" integer DEFAULT 0 NOT NULL,
+    "кол_во_пропущенных_тестов" integer DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE public."статистика_ученика" OWNER TO ege;
+
+--
+-- TOC entry 217 (class 1259 OID 16660)
+-- Name: статус_теста; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."статус_теста" (
+    "idстатус_теста" integer NOT NULL,
+    "название" text NOT NULL
+);
+
+
+ALTER TABLE public."статус_теста" OWNER TO ege;
+
+--
+-- TOC entry 218 (class 1259 OID 16666)
+-- Name: тест; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."тест" (
+    "idтест" integer NOT NULL,
+    "кол_во_заданий" integer NOT NULL,
+    "макс_балл" integer DEFAULT 0 NOT NULL,
+    "лог_создатель" text NOT NULL,
+    "idтип_теста" integer NOT NULL
+);
+
+
+ALTER TABLE public."тест" OWNER TO ege;
+
+--
+-- TOC entry 219 (class 1259 OID 16673)
+-- Name: тест_idтест_seq; Type: SEQUENCE; Schema: public; Owner: ege
+--
+
+CREATE SEQUENCE public."тест_idтест_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public."тест_idтест_seq" OWNER TO ege;
+
+--
+-- TOC entry 3117 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: тест_idтест_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: ege
+--
+
+ALTER SEQUENCE public."тест_idтест_seq" OWNED BY public."тест"."idтест";
+
+
+--
+-- TOC entry 220 (class 1259 OID 16675)
+-- Name: тип_теста; Type: TABLE; Schema: public; Owner: ege
+--
+
+CREATE TABLE public."тип_теста" (
+    "idтип_теста" integer NOT NULL,
+    "название" text NOT NULL
+);
+
+
+ALTER TABLE public."тип_теста" OWNER TO ege;
+
+--
+-- TOC entry 221 (class 1259 OID 16681)
+-- Name: тип_теста_idтип_теста_seq; Type: SEQUENCE; Schema: public; Owner: ege
+--
+
+CREATE SEQUENCE public."тип_теста_idтип_теста_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE public."тип_теста_idтип_теста_seq" OWNER TO ege;
+
+--
+-- TOC entry 3118 (class 0 OID 0)
+-- Dependencies: 221
+-- Name: тип_теста_idтип_теста_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: ege
+--
+
+ALTER SEQUENCE public."тип_теста_idтип_теста_seq" OWNED BY public."тип_теста"."idтип_теста";
+
+
+--
+-- TOC entry 2901 (class 2604 OID 16683)
+-- Name: вариант_задания idвариант_задания; Type: DEFAULT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."вариант_задания" ALTER COLUMN "idвариант_задания" SET DEFAULT nextval('public."вариант_задания_idвариант_задани_seq"'::regclass);
+
+
+--
+-- TOC entry 2902 (class 2604 OID 16684)
+-- Name: вопрос idвопрос; Type: DEFAULT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."вопрос" ALTER COLUMN "idвопрос" SET DEFAULT nextval('public."вопрос_idвопрос_seq"'::regclass);
+
+
+--
+-- TOC entry 2903 (class 2604 OID 16685)
+-- Name: задание idзадание; Type: DEFAULT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."задание" ALTER COLUMN "idзадание" SET DEFAULT nextval('public."задание_idзадание_seq"'::regclass);
+
+
+--
+-- TOC entry 2911 (class 2604 OID 16686)
+-- Name: тест idтест; Type: DEFAULT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тест" ALTER COLUMN "idтест" SET DEFAULT nextval('public."тест_idтест_seq"'::regclass);
+
+
+--
+-- TOC entry 2905 (class 2604 OID 16687)
+-- Name: тип_задания idтип_задания; Type: DEFAULT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тип_задания" ALTER COLUMN "idтип_задания" SET DEFAULT nextval('public."тип_задания_idтип_задания_seq"'::regclass);
+
+
+--
+-- TOC entry 2912 (class 2604 OID 16688)
+-- Name: тип_теста idтип_теста; Type: DEFAULT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тип_теста" ALTER COLUMN "idтип_теста" SET DEFAULT nextval('public."тип_теста_idтип_теста_seq"'::regclass);
+
+
+--
+-- TOC entry 3085 (class 0 OID 16572)
+-- Dependencies: 200
+-- Data for Name: вариант_задания; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."вариант_задания" VALUES (1, 1, 'Неоднозначное соотнесение таблицы и графа');
+INSERT INTO public."вариант_задания" VALUES (2, 1, 'Однозначное соотнесение таблицы и графа');
+INSERT INTO public."вариант_задания" VALUES (3, 1, 'Поиск оптимального маршрута по таблице');
+INSERT INTO public."вариант_задания" VALUES (4, 2, 'Монотонные функции');
+INSERT INTO public."вариант_задания" VALUES (5, 2, 'Немонотонные функции');
+INSERT INTO public."вариант_задания" VALUES (6, 2, 'Строки с пропущенными значениями');
+INSERT INTO public."вариант_задания" VALUES (7, 2, 'Разные задачи');
+INSERT INTO public."вариант_задания" VALUES (8, 3, 'Поголовный пересчёт');
+INSERT INTO public."вариант_задания" VALUES (9, 3, 'Родственные отношения, братья и сёстры');
+INSERT INTO public."вариант_задания" VALUES (10, 3, 'Родственные отношения, дяди и тёти');
+INSERT INTO public."вариант_задания" VALUES (11, 3, 'Определение данных по двум таблицам');
+INSERT INTO public."вариант_задания" VALUES (12, 3, 'Определение данных по одной таблице');
+INSERT INTO public."вариант_задания" VALUES (13, 3, 'Родственные отношения, племянники, племянницы, дедушки, внуки и внучки');
+INSERT INTO public."вариант_задания" VALUES (14, 4, 'Выбор кода при неиспользуемых сигналах');
+INSERT INTO public."вариант_задания" VALUES (15, 4, 'Шифрование по известному коду и перевод в различные СС');
+INSERT INTO public."вариант_задания" VALUES (16, 4, 'Расшифровка сообщений');
+INSERT INTO public."вариант_задания" VALUES (17, 4, 'Передача информации. Выбор кода');
+INSERT INTO public."вариант_задания" VALUES (18, 5, 'Исполнители на плоскости');
+INSERT INTO public."вариант_задания" VALUES (19, 5, 'Посимвольное двоичное преобразование');
+INSERT INTO public."вариант_задания" VALUES (20, 5, 'Разные задачи');
+INSERT INTO public."вариант_задания" VALUES (21, 5, 'Арифмометры');
+INSERT INTO public."вариант_задания" VALUES (22, 5, 'Арифмометры с движением в обе стороны');
+INSERT INTO public."вариант_задания" VALUES (23, 5, 'Посимвольное десятичное преобразование');
+INSERT INTO public."вариант_задания" VALUES (24, 6, 'Две линейные функции');
+INSERT INTO public."вариант_задания" VALUES (25, 6, 'Сумма двух линейных функций');
+INSERT INTO public."вариант_задания" VALUES (26, 6, 'Арифметическая прогрессия');
+INSERT INTO public."вариант_задания" VALUES (27, 6, 'Условие выполнения цикла while');
+INSERT INTO public."вариант_задания" VALUES (28, 7, 'Передача звуковых файлов');
+INSERT INTO public."вариант_задания" VALUES (29, 7, 'Передача изображений');
+INSERT INTO public."вариант_задания" VALUES (30, 7, 'Передача текстовых файлов');
+INSERT INTO public."вариант_задания" VALUES (31, 7, 'Хранение звуковых файлов');
+INSERT INTO public."вариант_задания" VALUES (32, 7, 'Сравнение двух способов передачи данных');
+INSERT INTO public."вариант_задания" VALUES (33, 7, 'Определение времени передачи файла');
+INSERT INTO public."вариант_задания" VALUES (34, 7, 'Хранение изображений');
+INSERT INTO public."вариант_задания" VALUES (35, 7, 'Определение размера записанного файла');
+INSERT INTO public."вариант_задания" VALUES (36, 8, 'Подсчет количества слов');
+INSERT INTO public."вариант_задания" VALUES (37, 8, 'Подсчет количества слов с ограничениями');
+INSERT INTO public."вариант_задания" VALUES (38, 8, 'Последовательность лампочек');
+INSERT INTO public."вариант_задания" VALUES (39, 8, 'Последовательность сигнальных ракет');
+INSERT INTO public."вариант_задания" VALUES (40, 8, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (41, 8, 'Подсчет количества разных последовательностей');
+INSERT INTO public."вариант_задания" VALUES (42, 8, 'Слова по порядку');
+INSERT INTO public."вариант_задания" VALUES (43, 9, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (44, 10, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (45, 11, 'Пароли с дополнительными сведениями');
+INSERT INTO public."вариант_задания" VALUES (46, 11, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (47, 11, 'Номера спортсменов');
+INSERT INTO public."вариант_задания" VALUES (48, 11, 'Автомобильные номера');
+INSERT INTO public."вариант_задания" VALUES (49, 11, 'Пароли');
+INSERT INTO public."вариант_задания" VALUES (50, 12, 'Исполнитель Редактор');
+INSERT INTO public."вариант_задания" VALUES (51, 12, 'Исполнитель Чертёжник');
+INSERT INTO public."вариант_задания" VALUES (52, 12, 'Остановка в заданной клетке, циклы с оператором ПОКА');
+INSERT INTO public."вариант_задания" VALUES (53, 12, 'Нестандартные задачи');
+INSERT INTO public."вариант_задания" VALUES (54, 12, 'Остановка в заданной клетке, циклы с операторами ПОКА и ЕСЛИ');
+INSERT INTO public."вариант_задания" VALUES (55, 12, 'Остановка в клетке, из которой начато движение');
+INSERT INTO public."вариант_задания" VALUES (56, 13, 'Подсчёт путей с избегаемой вершиной');
+INSERT INTO public."вариант_задания" VALUES (57, 13, 'Подсчёт путей с обязательной и избегаемой вершинами');
+INSERT INTO public."вариант_задания" VALUES (58, 13, 'Подсчёт путей');
+INSERT INTO public."вариант_задания" VALUES (59, 13, 'Подсчёт путей с обязательной вершиной');
+INSERT INTO public."вариант_задания" VALUES (60, 14, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (61, 14, 'Прямое сложение в СС');
+INSERT INTO public."вариант_задания" VALUES (62, 14, 'Определение основания');
+INSERT INTO public."вариант_задания" VALUES (63, 15, 'Побитовая конъюнкция');
+INSERT INTO public."вариант_задания" VALUES (64, 15, 'Числовая плоскость');
+INSERT INTO public."вариант_задания" VALUES (65, 15, 'Множества');
+INSERT INTO public."вариант_задания" VALUES (66, 15, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (67, 16, 'Программы с двумя рекурсивными функциями с возвращаемыми значениями');
+INSERT INTO public."вариант_задания" VALUES (68, 16, 'Программы с двумя рекурсивными функциями с текстовым выводом');
+INSERT INTO public."вариант_задания" VALUES (69, 16, 'Рекурсивные функции с возвращаемыми значениями');
+INSERT INTO public."вариант_задания" VALUES (70, 16, 'Алгоритмы, опирающиеся на несколько предыдущих значений');
+INSERT INTO public."вариант_задания" VALUES (71, 16, 'Рекурсивные функции с текстовым выводом');
+INSERT INTO public."вариант_задания" VALUES (72, 16, 'Алгоритмы, опирающиеся на одно предыдущее значение');
+INSERT INTO public."вариант_задания" VALUES (73, 17, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (74, 18, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (75, 19, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (76, 20, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (77, 21, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (78, 22, 'Посимвольная обработка восьмеричных чисел');
+INSERT INTO public."вариант_задания" VALUES (79, 22, 'Посимвольная обработка чисел в разных СС');
+INSERT INTO public."вариант_задания" VALUES (80, 22, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (81, 22, 'Посимвольная обработка десятичных чисел');
+INSERT INTO public."вариант_задания" VALUES (82, 23, 'Количество программ');
+INSERT INTO public."вариант_задания" VALUES (83, 23, 'Количество программ с обязательным этапом');
+INSERT INTO public."вариант_задания" VALUES (84, 23, 'Количество программ с избегаемым этапом');
+INSERT INTO public."вариант_задания" VALUES (85, 23, 'Количество программ с обязательным и избегаемым этапами');
+INSERT INTO public."вариант_задания" VALUES (86, 23, 'Поиск количества программ по заданному числу');
+INSERT INTO public."вариант_задания" VALUES (87, 23, 'Поиск количества чисел по заданному числу команд');
+INSERT INTO public."вариант_задания" VALUES (88, 24, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (89, 25, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (90, 26, 'Разное');
+INSERT INTO public."вариант_задания" VALUES (91, 27, 'Разное');
+
+
+--
+-- TOC entry 3087 (class 0 OID 16580)
+-- Dependencies: 202
+-- Data for Name: вопрос; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."вопрос" VALUES (1, 36, 'Первый вариант для задания №8', 'задание_8.1.1');
+INSERT INTO public."вопрос" VALUES (2, 36, 'Второй вариант для задания №8', 'задание_8.1.2');
+INSERT INTO public."вопрос" VALUES (3, 36, 'Третий вариант для задания №8', 'задание_8.1.3');
+INSERT INTO public."вопрос" VALUES (4, 41, NULL, 'задание_8.6.1');
+INSERT INTO public."вопрос" VALUES (5, 41, NULL, 'задание_8.6.2');
+INSERT INTO public."вопрос" VALUES (6, 41, NULL, 'задание_8.6.3');
+INSERT INTO public."вопрос" VALUES (7, 45, NULL, 'задание_8.11.1');
+INSERT INTO public."вопрос" VALUES (8, 45, NULL, 'задание_8.11.2');
+
+
+--
+-- TOC entry 3089 (class 0 OID 16588)
+-- Dependencies: 204
+-- Data for Name: задание; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."задание" VALUES (123, 7, NULL, '975', '<p id="text_of_ex8111">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 18 символов и содержащий только символы из 12-символьного набора: А, В, C, D, Е, F, G, H, К, L, M, N. В базе данных для хранения сведений о каждом пользователе отведено одинаковое и минимально возможное целое число байт. При этом используют посимвольное кодирование паролей, все символы кодируют одинаковым и минимально возможным количеством бит. Кроме собственно пароля, для каждого пользователя в системе хранятся дополнительные сведения, для чего отведено 16 байт на одного пользователя.</p><p id="text_of_ex8111">Определите объём памяти (в байтах), необходимый для хранения сведений о 39 пользователях. В ответе запишите только целое число — количество байт.</p>', 1);
+INSERT INTO public."задание" VALUES (124, 8, NULL, '16', '<p id="text_of_ex8112">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 8 символов и содержащий только символы из 7-буквенного набора Н, О, Р, С, Т, У, X. В базе данных для хранения сведений о каждом пользователе отведено одинаковое целое число байт, при этом для хранения сведений о 62 пользователях используется 1178 байт. Для каждого пользователя хранятся пароль и дополнительные сведения. Для хранения паролей используют посимвольное кодирование, все символы кодируются одинаковым и минимально возможным количеством бит. Сколько бит отведено для хранения дополнительных сведений о каждом пользователе?</p>', 1);
+INSERT INTO public."задание" VALUES (125, 7, NULL, '459', '<p id="text_of_ex8111">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 14 символов и содержащий только символы из 12-символьного набора: А, В, C, D, Е, F, G, H, К, L, M, N. В базе данных для хранения сведений о каждом пользователе отведено одинаковое и минимально возможное целое число байт. При этом используют посимвольное кодирование паролей, все символы кодируют одинаковым и минимально возможным количеством бит. Кроме собственно пароля, для каждого пользователя в системе хранятся дополнительные сведения, для чего отведено 10 байт на одного пользователя.</p><p id="text_of_ex8111">Определите объём памяти (в байтах), необходимый для хранения сведений о 27 пользователях. В ответе запишите только целое число — количество байт.</p>', 1);
+INSERT INTO public."задание" VALUES (126, 7, NULL, '912', '<p id="text_of_ex8111">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 13 символов и содержащий только символы из 12-символьного набора: А, В, C, D, Е, F, G, H, К, L, M, N. В базе данных для хранения сведений о каждом пользователе отведено одинаковое и минимально возможное целое число байт. При этом используют посимвольное кодирование паролей, все символы кодируют одинаковым и минимально возможным количеством бит. Кроме собственно пароля, для каждого пользователя в системе хранятся дополнительные сведения, для чего отведено 12 байт на одного пользователя.</p><p id="text_of_ex8111">Определите объём памяти (в байтах), необходимый для хранения сведений о 48 пользователях. В ответе запишите только целое число — количество байт.</p>', 1);
+INSERT INTO public."задание" VALUES (127, 8, NULL, '14', '<p id="text_of_ex8112">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 17 символов и содержащий только символы из 7-буквенного набора Н, О, Р, С, Т, У, X. В базе данных для хранения сведений о каждом пользователе отведено одинаковое целое число байт, при этом для хранения сведений о 28 пользователях используется 588 байт. Для каждого пользователя хранятся пароль и дополнительные сведения. Для хранения паролей используют посимвольное кодирование, все символы кодируются одинаковым и минимально возможным количеством бит. Сколько бит отведено для хранения дополнительных сведений о каждом пользователе?</p>', 1);
+INSERT INTO public."задание" VALUES (128, 1, NULL, '16', '<p id="text_of_ex811">Некоторый алфавит содержит 2 различных символов. Сколько 4 -буквенных слов можно составить из символов этого алфавита, если символы в слове могут повторяться?</p>', 1);
+INSERT INTO public."задание" VALUES (129, 3, NULL, '1344', '<p id="text_of_ex813">Сколько существует различных символьных последовательностей длины от 3 до 5 в четырёхбуквенном алфавите {A, T, Г, Ц}?</p>', 1);
+INSERT INTO public."задание" VALUES (130, 1, NULL, '1024', '<p id="text_of_ex811">Некоторый алфавит содержит 4 различных символов. Сколько 5 -буквенных слов можно составить из символов этого алфавита, если символы в слове могут повторяться?</p>', 1);
+INSERT INTO public."задание" VALUES (131, 3, NULL, '320', '<p id="text_of_ex813">Сколько существует различных символьных последовательностей длины от 3 до 4 в четырёхбуквенном алфавите {A, T, Г, Ц}?</p>', 1);
+INSERT INTO public."задание" VALUES (132, 7, NULL, '494', '<p id="text_of_ex8111">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 16 символов и содержащий только символы из 12-символьного набора: А, В, C, D, Е, F, G, H, К, L, M, N. В базе данных для хранения сведений о каждом пользователе отведено одинаковое и минимально возможное целое число байт. При этом используют посимвольное кодирование паролей, все символы кодируют одинаковым и минимально возможным количеством бит. Кроме собственно пароля, для каждого пользователя в системе хранятся дополнительные сведения, для чего отведено 11 байт на одного пользователя.</p><p id="text_of_ex8111">Определите объём памяти (в байтах), необходимый для хранения сведений о 26 пользователях. В ответе запишите только целое число — количество байт.</p>', 1);
+INSERT INTO public."задание" VALUES (133, 8, NULL, '12', '<p id="text_of_ex8112">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 6 символов и содержащий только символы из 7-буквенного набора Н, О, Р, С, Т, У, X. В базе данных для хранения сведений о каждом пользователе отведено одинаковое целое число байт, при этом для хранения сведений о 61 пользователях используется 915 байт. Для каждого пользователя хранятся пароль и дополнительные сведения. Для хранения паролей используют посимвольное кодирование, все символы кодируются одинаковым и минимально возможным количеством бит. Сколько бит отведено для хранения дополнительных сведений о каждом пользователе?</p>', 1);
+INSERT INTO public."задание" VALUES (134, 7, NULL, '297', '<p id="text_of_ex8111">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 7 символов и содержащий только символы из 12-символьного набора: А, В, C, D, Е, F, G, H, К, L, M, N. В базе данных для хранения сведений о каждом пользователе отведено одинаковое и минимально возможное целое число байт. При этом используют посимвольное кодирование паролей, все символы кодируют одинаковым и минимально возможным количеством бит. Кроме собственно пароля, для каждого пользователя в системе хранятся дополнительные сведения, для чего отведено 7 байт на одного пользователя.</p><p id="text_of_ex8111">Определите объём памяти (в байтах), необходимый для хранения сведений о 27 пользователях. В ответе запишите только целое число — количество байт.</p>', 1);
+INSERT INTO public."задание" VALUES (135, 8, NULL, '9', '<p id="text_of_ex8112">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 13 символов и содержащий только символы из 7-буквенного набора Н, О, Р, С, Т, У, X. В базе данных для хранения сведений о каждом пользователе отведено одинаковое целое число байт, при этом для хранения сведений о 56 пользователях используется 784 байт. Для каждого пользователя хранятся пароль и дополнительные сведения. Для хранения паролей используют посимвольное кодирование, все символы кодируются одинаковым и минимально возможным количеством бит. Сколько бит отведено для хранения дополнительных сведений о каждом пользователе?</p>', 1);
+INSERT INTO public."задание" VALUES (136, 8, NULL, '16', '<p id="text_of_ex8112">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 9 символов и содержащий только символы из 7-буквенного набора Н, О, Р, С, Т, У, X. В базе данных для хранения сведений о каждом пользователе отведено одинаковое целое число байт, при этом для хранения сведений о 24 пользователях используется 480 байт. Для каждого пользователя хранятся пароль и дополнительные сведения. Для хранения паролей используют посимвольное кодирование, все символы кодируются одинаковым и минимально возможным количеством бит. Сколько бит отведено для хранения дополнительных сведений о каждом пользователе?</p>', 1);
+INSERT INTO public."задание" VALUES (137, 8, NULL, '11', '<p id="text_of_ex8112">При регистрации в компьютерной системе каждому пользователю выдаётся пароль, состоящий из 18 символов и содержащий только символы из 7-буквенного набора Н, О, Р, С, Т, У, X. В базе данных для хранения сведений о каждом пользователе отведено одинаковое целое число байт, при этом для хранения сведений о 35 пользователях используется 630 байт. Для каждого пользователя хранятся пароль и дополнительные сведения. Для хранения паролей используют посимвольное кодирование, все символы кодируются одинаковым и минимально возможным количеством бит. Сколько бит отведено для хранения дополнительных сведений о каждом пользователе?</p>', 1);
+INSERT INTO public."задание" VALUES (138, 3, NULL, '5120', '<p id="text_of_ex813">Сколько существует различных символьных последовательностей длины от 5 до 6 в четырёхбуквенном алфавите {A, T, Г, Ц}?</p>', 1);
+INSERT INTO public."задание" VALUES (139, 3, NULL, '84', '<p id="text_of_ex813">Сколько существует различных символьных последовательностей длины от 1 до 3 в четырёхбуквенном алфавите {A, T, Г, Ц}?</p>', 1);
+INSERT INTO public."задание" VALUES (140, 2, NULL, '27', '<p id="text_of_ex812">Сколько слов длины 3 можно составить из букв Е, Г, Э? Каждая буква может входить в слово несколько раз.</p>', 1);
+INSERT INTO public."задание" VALUES (141, 3, NULL, '5184', '<p id="text_of_ex813">Сколько существует различных символьных последовательностей длины от 3 до 3 в четырёхбуквенном алфавите {A, T, Г, Ц}?</p>', 1);
+INSERT INTO public."задание" VALUES (142, 1, NULL, '625', '<p id="text_of_ex811">Некоторый алфавит содержит 5 различных символов. Сколько 4 -буквенных слов можно составить из символов этого алфавита, если символы в слове могут повторяться?</p>', 1);
+INSERT INTO public."задание" VALUES (143, 1, NULL, '64', '<p id="text_of_ex811">Некоторый алфавит содержит 4 различных символов. Сколько 3 -буквенных слов можно составить из символов этого алфавита, если символы в слове могут повторяться?</p>', 1);
+INSERT INTO public."задание" VALUES (144, 2, NULL, '9', '<p id="text_of_ex812">Сколько слов длины 2 можно составить из букв Е, Г, Э? Каждая буква может входить в слово несколько раз.</p>', 1);
+
+
+--
+-- TOC entry 3091 (class 0 OID 16596)
+-- Dependencies: 206
+-- Data for Name: класс; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."класс" VALUES ('Laptev', 'Azaza');
+INSERT INTO public."класс" VALUES ('Laptev', 'Kusnez');
+
+
+--
+-- TOC entry 3092 (class 0 OID 16602)
+-- Dependencies: 207
+-- Data for Name: назначенные_тесты; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."назначенные_тесты" VALUES ('Azaza', 48, 2, 5);
+INSERT INTO public."назначенные_тесты" VALUES ('Azaza', 51, 1, 0);
+INSERT INTO public."назначенные_тесты" VALUES ('Kusnez', 51, 1, 0);
+INSERT INTO public."назначенные_тесты" VALUES ('Azaza', 50, 2, 1);
+INSERT INTO public."назначенные_тесты" VALUES ('Azaza', 52, 1, 0);
+INSERT INTO public."назначенные_тесты" VALUES ('Kusnez', 52, 1, 0);
+INSERT INTO public."назначенные_тесты" VALUES ('Azaza', 49, 2, 3);
+
+
+--
+-- TOC entry 3093 (class 0 OID 16609)
+-- Dependencies: 208
+-- Data for Name: пользователь; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."пользователь" VALUES ('Azaza', 'megaman', 'Азамат', 1);
+INSERT INTO public."пользователь" VALUES ('Kusnez', 'megatop', 'Евгений', 1);
+INSERT INTO public."пользователь" VALUES ('Amin', 'megalol', 'Амин', 1);
+INSERT INTO public."пользователь" VALUES ('Laptev', 'superduper', 'Лаптев Валерий Викторович
+', 2);
+INSERT INTO public."пользователь" VALUES ('Tolas', 'superpuper', 'Толасова Виктория Викторовна', 2);
+
+
+--
+-- TOC entry 3094 (class 0 OID 16615)
+-- Dependencies: 209
+-- Data for Name: роль; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."роль" VALUES (1, 'ученик');
+INSERT INTO public."роль" VALUES (2, 'преподаватель');
+INSERT INTO public."роль" VALUES (3, 'составитель');
+INSERT INTO public."роль" VALUES (4, 'администратор');
+
+
+--
+-- TOC entry 3095 (class 0 OID 16621)
+-- Dependencies: 210
+-- Data for Name: список_заданий; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."список_заданий" VALUES (128, 49, 1);
+INSERT INTO public."список_заданий" VALUES (129, 49, 2);
+INSERT INTO public."список_заданий" VALUES (130, 49, 3);
+INSERT INTO public."список_заданий" VALUES (131, 49, 4);
+INSERT INTO public."список_заданий" VALUES (132, 49, 1);
+INSERT INTO public."список_заданий" VALUES (133, 50, 1);
+INSERT INTO public."список_заданий" VALUES (134, 50, 2);
+INSERT INTO public."список_заданий" VALUES (135, 50, 3);
+INSERT INTO public."список_заданий" VALUES (136, 50, 4);
+INSERT INTO public."список_заданий" VALUES (137, 50, 5);
+INSERT INTO public."список_заданий" VALUES (131, 51, 2);
+INSERT INTO public."список_заданий" VALUES (138, 51, 1);
+INSERT INTO public."список_заданий" VALUES (139, 51, 3);
+INSERT INTO public."список_заданий" VALUES (140, 51, 4);
+INSERT INTO public."список_заданий" VALUES (141, 51, 5);
+INSERT INTO public."список_заданий" VALUES (140, 52, 2);
+INSERT INTO public."список_заданий" VALUES (128, 52, 4);
+INSERT INTO public."список_заданий" VALUES (142, 52, 1);
+INSERT INTO public."список_заданий" VALUES (143, 52, 3);
+INSERT INTO public."список_заданий" VALUES (144, 52, 5);
+INSERT INTO public."список_заданий" VALUES (123, 48, 1);
+INSERT INTO public."список_заданий" VALUES (124, 48, 2);
+INSERT INTO public."список_заданий" VALUES (125, 48, 3);
+INSERT INTO public."список_заданий" VALUES (126, 48, 4);
+INSERT INTO public."список_заданий" VALUES (127, 48, 5);
+
+
+--
+-- TOC entry 3096 (class 0 OID 16624)
+-- Dependencies: 211
+-- Data for Name: список_заявок; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+
+
+--
+-- TOC entry 3097 (class 0 OID 16630)
+-- Dependencies: 212
+-- Data for Name: список_ответов; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."список_ответов" VALUES (21, 123, 1, '975');
+INSERT INTO public."список_ответов" VALUES (21, 124, 1, '16');
+INSERT INTO public."список_ответов" VALUES (21, 125, 1, '459');
+INSERT INTO public."список_ответов" VALUES (21, 126, 1, '912');
+INSERT INTO public."список_ответов" VALUES (21, 127, 1, '14');
+INSERT INTO public."список_ответов" VALUES (22, 128, 0, '');
+INSERT INTO public."список_ответов" VALUES (22, 132, 0, '');
+INSERT INTO public."список_ответов" VALUES (22, 129, 0, '');
+INSERT INTO public."список_ответов" VALUES (22, 130, 0, '');
+INSERT INTO public."список_ответов" VALUES (22, 131, 0, '');
+INSERT INTO public."список_ответов" VALUES (23, 128, 1, '16');
+INSERT INTO public."список_ответов" VALUES (23, 132, 1, '494');
+INSERT INTO public."список_ответов" VALUES (23, 129, 0, '');
+INSERT INTO public."список_ответов" VALUES (23, 130, 0, '');
+INSERT INTO public."список_ответов" VALUES (23, 131, 1, '320');
+INSERT INTO public."список_ответов" VALUES (24, 128, 0, '');
+INSERT INTO public."список_ответов" VALUES (24, 132, 0, '');
+INSERT INTO public."список_ответов" VALUES (24, 129, 0, '');
+INSERT INTO public."список_ответов" VALUES (24, 130, 0, '');
+INSERT INTO public."список_ответов" VALUES (24, 131, 0, '');
+INSERT INTO public."список_ответов" VALUES (25, 133, 1, '12');
+INSERT INTO public."список_ответов" VALUES (25, 134, 0, '41');
+INSERT INTO public."список_ответов" VALUES (25, 135, 0, '52');
+INSERT INTO public."список_ответов" VALUES (25, 136, 0, '42');
+INSERT INTO public."список_ответов" VALUES (25, 137, 0, '524');
+INSERT INTO public."список_ответов" VALUES (26, 128, 0, '');
+INSERT INTO public."список_ответов" VALUES (26, 132, 0, '');
+INSERT INTO public."список_ответов" VALUES (26, 129, 0, '');
+INSERT INTO public."список_ответов" VALUES (26, 130, 0, '');
+INSERT INTO public."список_ответов" VALUES (26, 131, 0, '');
+INSERT INTO public."список_ответов" VALUES (27, 128, 0, '');
+INSERT INTO public."список_ответов" VALUES (27, 132, 0, '');
+INSERT INTO public."список_ответов" VALUES (27, 129, 0, '');
+INSERT INTO public."список_ответов" VALUES (27, 130, 0, '');
+INSERT INTO public."список_ответов" VALUES (27, 131, 0, '');
+
+
+--
+-- TOC entry 3100 (class 0 OID 16644)
+-- Dependencies: 215
+-- Data for Name: список_тестов; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."список_тестов" VALUES (21, 'Azaza', 48, 5);
+INSERT INTO public."список_тестов" VALUES (22, 'Azaza', 49, 0);
+INSERT INTO public."список_тестов" VALUES (23, 'Azaza', 49, 3);
+INSERT INTO public."список_тестов" VALUES (24, 'Azaza', 49, 0);
+INSERT INTO public."список_тестов" VALUES (25, 'Azaza', 50, 1);
+INSERT INTO public."список_тестов" VALUES (26, 'Azaza', 49, 0);
+INSERT INTO public."список_тестов" VALUES (27, 'Azaza', 49, 0);
+
+
+--
+-- TOC entry 3101 (class 0 OID 16652)
+-- Dependencies: 216
+-- Data for Name: статистика_ученика; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."статистика_ученика" VALUES ('Kusnez', 0, 0);
+INSERT INTO public."статистика_ученика" VALUES ('Amin', 0, 0);
+INSERT INTO public."статистика_ученика" VALUES ('Azaza', 7, 4);
+
+
+--
+-- TOC entry 3102 (class 0 OID 16660)
+-- Dependencies: 217
+-- Data for Name: статус_теста; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."статус_теста" VALUES (1, 'назначен');
+INSERT INTO public."статус_теста" VALUES (2, 'решён');
+
+
+--
+-- TOC entry 3103 (class 0 OID 16666)
+-- Dependencies: 218
+-- Data for Name: тест; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."тест" VALUES (48, 5, 5, 'Azaza', 1);
+INSERT INTO public."тест" VALUES (49, 5, 5, 'Laptev', 1);
+INSERT INTO public."тест" VALUES (50, 5, 5, 'Laptev', 1);
+INSERT INTO public."тест" VALUES (51, 5, 5, 'Laptev', 1);
+INSERT INTO public."тест" VALUES (52, 5, 5, 'Laptev', 1);
+
+
+--
+-- TOC entry 3098 (class 0 OID 16636)
+-- Dependencies: 213
+-- Data for Name: тип_задания; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."тип_задания" VALUES (1, '1. Анализ информационных моделей', 1, '');
+INSERT INTO public."тип_задания" VALUES (2, '2. Построение таблиц истинности логических выражений', 1, '');
+INSERT INTO public."тип_задания" VALUES (3, '3. Базы данных. Файловая система', 1, '');
+INSERT INTO public."тип_задания" VALUES (4, '4. Кодирование и декодирование информации', 1, '');
+INSERT INTO public."тип_задания" VALUES (5, '5. Анализ и построение алгоритмов для исполнителей', 1, '');
+INSERT INTO public."тип_задания" VALUES (6, '6. Анализ программ', 1, '');
+INSERT INTO public."тип_задания" VALUES (7, '7. Кодирование и декодирование информации. Передача информации', 1, '');
+INSERT INTO public."тип_задания" VALUES (8, '8. Перебор слов и системы счисления', 1, 'задание_8.html');
+INSERT INTO public."тип_задания" VALUES (9, '9. Эксель', 1, '');
+INSERT INTO public."тип_задания" VALUES (10, '10. Поиск символов в текстовом редакторе просмотреть', 1, '');
+INSERT INTO public."тип_задания" VALUES (12, '12. Выполнение алгоритмов для исполнителей', 1, '');
+INSERT INTO public."тип_задания" VALUES (13, '13. Поиск путей в графе', 1, '');
+INSERT INTO public."тип_задания" VALUES (14, '14. Кодирование чисел. Системы счисления', 1, '');
+INSERT INTO public."тип_задания" VALUES (15, '15. Преобразование логических выражений', 1, '');
+INSERT INTO public."тип_задания" VALUES (16, '16. Рекурсивные алгоритмы', 1, '');
+INSERT INTO public."тип_задания" VALUES (17, '17. Проверка на делимость', 1, '');
+INSERT INTO public."тип_задания" VALUES (18, '18. Робот-сборщик монет', 1, '');
+INSERT INTO public."тип_задания" VALUES (19, '19. Выигрышная стратегия. Задание 1', 1, '');
+INSERT INTO public."тип_задания" VALUES (20, '20. Выигрышная стратегия. Задание 2', 1, '');
+INSERT INTO public."тип_задания" VALUES (21, '21. Выигрышная стратегия. Задание 3', 1, '');
+INSERT INTO public."тип_задания" VALUES (22, '22. Анализ программы с циклами и условными операторами', 1, '');
+INSERT INTO public."тип_задания" VALUES (23, '23. Оператор присваивания и ветвления. Перебор вариантов, построение дерева', 1, '');
+INSERT INTO public."тип_задания" VALUES (24, '24. Обработка символьных строк', 1, '');
+INSERT INTO public."тип_задания" VALUES (25, '25. Обработка целочисленной информации', 2, '');
+INSERT INTO public."тип_задания" VALUES (26, '26. Обработка целочисленной информации', 2, '');
+INSERT INTO public."тип_задания" VALUES (27, '27. Программирование', 2, '');
+INSERT INTO public."тип_задания" VALUES (11, '11. Вычисление количества информации', 1, 'задание_11.html');
+
+
+--
+-- TOC entry 3105 (class 0 OID 16675)
+-- Dependencies: 220
+-- Data for Name: тип_теста; Type: TABLE DATA; Schema: public; Owner: ege
+--
+
+INSERT INTO public."тип_теста" VALUES (1, 'учебная');
+INSERT INTO public."тип_теста" VALUES (2, 'теория');
+INSERT INTO public."тип_теста" VALUES (3, 'вариант');
+
+
+--
+-- TOC entry 3119 (class 0 OID 0)
+-- Dependencies: 201
+-- Name: вариант_задания_idвариант_задани_seq; Type: SEQUENCE SET; Schema: public; Owner: ege
+--
+
+SELECT pg_catalog.setval('public."вариант_задания_idвариант_задани_seq"', 1, false);
+
+
+--
+-- TOC entry 3120 (class 0 OID 0)
+-- Dependencies: 203
+-- Name: вопрос_idвопрос_seq; Type: SEQUENCE SET; Schema: public; Owner: ege
+--
+
+SELECT pg_catalog.setval('public."вопрос_idвопрос_seq"', 1, false);
+
+
+--
+-- TOC entry 3121 (class 0 OID 0)
+-- Dependencies: 205
+-- Name: задание_idзадание_seq; Type: SEQUENCE SET; Schema: public; Owner: ege
+--
+
+SELECT pg_catalog.setval('public."задание_idзадание_seq"', 144, true);
+
+
+--
+-- TOC entry 3122 (class 0 OID 0)
+-- Dependencies: 219
+-- Name: тест_idтест_seq; Type: SEQUENCE SET; Schema: public; Owner: ege
+--
+
+SELECT pg_catalog.setval('public."тест_idтест_seq"', 52, true);
+
+
+--
+-- TOC entry 3123 (class 0 OID 0)
+-- Dependencies: 214
+-- Name: тип_задания_idтип_задания_seq; Type: SEQUENCE SET; Schema: public; Owner: ege
+--
+
+SELECT pg_catalog.setval('public."тип_задания_idтип_задания_seq"', 27, true);
+
+
+--
+-- TOC entry 3124 (class 0 OID 0)
+-- Dependencies: 221
+-- Name: тип_теста_idтип_теста_seq; Type: SEQUENCE SET; Schema: public; Owner: ege
+--
+
+SELECT pg_catalog.setval('public."тип_теста_idтип_теста_seq"', 1, false);
+
+
+--
+-- TOC entry 2914 (class 2606 OID 16690)
+-- Name: вариант_задания вариант_задания_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."вариант_задания"
+    ADD CONSTRAINT "вариант_задания_pkey" PRIMARY KEY ("idвариант_задания");
+
+
+--
+-- TOC entry 2916 (class 2606 OID 16692)
+-- Name: вопрос вопрос_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."вопрос"
+    ADD CONSTRAINT "вопрос_pkey" PRIMARY KEY ("idвопрос");
+
+
+--
+-- TOC entry 2918 (class 2606 OID 16694)
+-- Name: задание задание_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."задание"
+    ADD CONSTRAINT "задание_pkey" PRIMARY KEY ("idзадание");
+
+
+--
+-- TOC entry 2920 (class 2606 OID 16696)
+-- Name: пользователь пользователь_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."пользователь"
+    ADD CONSTRAINT "пользователь_pkey" PRIMARY KEY ("логин");
+
+
+--
+-- TOC entry 2922 (class 2606 OID 16698)
+-- Name: пользователь пользователь_пароль_key; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."пользователь"
+    ADD CONSTRAINT "пользователь_пароль_key" UNIQUE ("пароль");
+
+
+--
+-- TOC entry 2924 (class 2606 OID 16700)
+-- Name: роль роль_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."роль"
+    ADD CONSTRAINT "роль_pkey" PRIMARY KEY ("idроль");
+
+
+--
+-- TOC entry 2928 (class 2606 OID 16702)
+-- Name: список_тестов список_тестов_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_тестов"
+    ADD CONSTRAINT "список_тестов_pkey" PRIMARY KEY ("idсписок_тестов");
+
+
+--
+-- TOC entry 2930 (class 2606 OID 16704)
+-- Name: статус_теста статус_теста_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."статус_теста"
+    ADD CONSTRAINT "статус_теста_pkey" PRIMARY KEY ("idстатус_теста");
+
+
+--
+-- TOC entry 2932 (class 2606 OID 16706)
+-- Name: тест тест_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тест"
+    ADD CONSTRAINT "тест_pkey" PRIMARY KEY ("idтест");
+
+
+--
+-- TOC entry 2926 (class 2606 OID 16708)
+-- Name: тип_задания тип_задания_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тип_задания"
+    ADD CONSTRAINT "тип_задания_pkey" PRIMARY KEY ("idтип_задания");
+
+
+--
+-- TOC entry 2934 (class 2606 OID 16710)
+-- Name: тип_теста тип_теста_pkey; Type: CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тип_теста"
+    ADD CONSTRAINT "тип_теста_pkey" PRIMARY KEY ("idтип_теста");
+
+
+--
+-- TOC entry 2935 (class 2606 OID 16711)
+-- Name: вариант_задания вариант_задания_idтип_задания_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."вариант_задания"
+    ADD CONSTRAINT "вариант_задания_idтип_задания_fkey" FOREIGN KEY ("idтип_задания") REFERENCES public."тип_задания"("idтип_задания");
+
+
+--
+-- TOC entry 2936 (class 2606 OID 16716)
+-- Name: вопрос вопрос_idвариант_задания_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."вопрос"
+    ADD CONSTRAINT "вопрос_idвариант_задания_fkey" FOREIGN KEY ("idвариант_задания") REFERENCES public."вариант_задания"("idвариант_задания");
+
+
+--
+-- TOC entry 2937 (class 2606 OID 16721)
+-- Name: задание задание_idвопрос_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."задание"
+    ADD CONSTRAINT "задание_idвопрос_fkey" FOREIGN KEY ("idвопрос") REFERENCES public."вопрос"("idвопрос");
+
+
+--
+-- TOC entry 2938 (class 2606 OID 16726)
+-- Name: класс класс_лог_преподаватель_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."класс"
+    ADD CONSTRAINT "класс_лог_преподаватель_fkey" FOREIGN KEY ("лог_преподаватель") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 2946 (class 2606 OID 16731)
+-- Name: список_заявок класс_лог_преподаватель_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_заявок"
+    ADD CONSTRAINT "класс_лог_преподаватель_fkey" FOREIGN KEY ("лог_преподаватель") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 2939 (class 2606 OID 16736)
+-- Name: класс класс_лог_ученик_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."класс"
+    ADD CONSTRAINT "класс_лог_ученик_fkey" FOREIGN KEY ("лог_ученик") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 2947 (class 2606 OID 16741)
+-- Name: список_заявок класс_лог_ученик_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_заявок"
+    ADD CONSTRAINT "класс_лог_ученик_fkey" FOREIGN KEY ("лог_ученик") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 2940 (class 2606 OID 16746)
+-- Name: назначенные_тесты назначенные_тест_idстатус_теста_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."назначенные_тесты"
+    ADD CONSTRAINT "назначенные_тест_idстатус_теста_fkey" FOREIGN KEY ("idстатус_теста") REFERENCES public."статус_теста"("idстатус_теста");
+
+
+--
+-- TOC entry 2941 (class 2606 OID 16751)
+-- Name: назначенные_тесты назначенные_тест_idтест_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."назначенные_тесты"
+    ADD CONSTRAINT "назначенные_тест_idтест_fkey" FOREIGN KEY ("idтест") REFERENCES public."тест"("idтест");
+
+
+--
+-- TOC entry 2942 (class 2606 OID 16756)
+-- Name: назначенные_тесты назначенные_тест_лог_получатель_key; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."назначенные_тесты"
+    ADD CONSTRAINT "назначенные_тест_лог_получатель_key" FOREIGN KEY ("лог_получатель") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 2943 (class 2606 OID 16761)
+-- Name: пользователь пользователь_idроль_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."пользователь"
+    ADD CONSTRAINT "пользователь_idроль_fkey" FOREIGN KEY ("idроль") REFERENCES public."роль"("idроль");
+
+
+--
+-- TOC entry 2944 (class 2606 OID 16766)
+-- Name: список_заданий список_заданий_idзадание_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_заданий"
+    ADD CONSTRAINT "список_заданий_idзадание_fkey" FOREIGN KEY ("idзадание") REFERENCES public."задание"("idзадание");
+
+
+--
+-- TOC entry 2945 (class 2606 OID 16771)
+-- Name: список_заданий список_заданий_idтест_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_заданий"
+    ADD CONSTRAINT "список_заданий_idтест_fkey" FOREIGN KEY ("idтест") REFERENCES public."тест"("idтест");
+
+
+--
+-- TOC entry 2948 (class 2606 OID 16776)
+-- Name: список_ответов список_ответов_idзадание_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_ответов"
+    ADD CONSTRAINT "список_ответов_idзадание_fkey" FOREIGN KEY ("idзадание") REFERENCES public."задание"("idзадание");
+
+
+--
+-- TOC entry 2949 (class 2606 OID 16781)
+-- Name: список_ответов список_ответов_idсписок_тестов_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_ответов"
+    ADD CONSTRAINT "список_ответов_idсписок_тестов_fkey" FOREIGN KEY ("idсписок_тестов") REFERENCES public."список_тестов"("idсписок_тестов");
+
+
+--
+-- TOC entry 2950 (class 2606 OID 16786)
+-- Name: список_тестов список_тестов_idтест_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_тестов"
+    ADD CONSTRAINT "список_тестов_idтест_fkey" FOREIGN KEY ("idтест") REFERENCES public."тест"("idтест");
+
+
+--
+-- TOC entry 2951 (class 2606 OID 16791)
+-- Name: список_тестов список_тестов_лог_получатель_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."список_тестов"
+    ADD CONSTRAINT "список_тестов_лог_получатель_fkey" FOREIGN KEY ("лог_получатель") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 2952 (class 2606 OID 16796)
+-- Name: статистика_ученика статистика_ученика_логин_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."статистика_ученика"
+    ADD CONSTRAINT "статистика_ученика_логин_fkey" FOREIGN KEY ("логин") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 2953 (class 2606 OID 16801)
+-- Name: тест тест_idтип_теста_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тест"
+    ADD CONSTRAINT "тест_idтип_теста_fkey" FOREIGN KEY ("idтип_теста") REFERENCES public."тип_теста"("idтип_теста") NOT VALID;
+
+
+--
+-- TOC entry 2954 (class 2606 OID 16806)
+-- Name: тест тест_лог_создатель_fkey; Type: FK CONSTRAINT; Schema: public; Owner: ege
+--
+
+ALTER TABLE ONLY public."тест"
+    ADD CONSTRAINT "тест_лог_создатель_fkey" FOREIGN KEY ("лог_создатель") REFERENCES public."пользователь"("логин");
+
+
+--
+-- TOC entry 3112 (class 0 OID 0)
+-- Dependencies: 3
+-- Name: SCHEMA public; Type: ACL; Schema: -; Owner: postgres
+--
+
+REVOKE ALL ON SCHEMA public FROM postgres;
+GRANT ALL ON SCHEMA public TO ege;
+
+
+-- Completed on 2021-07-10 15:01:45 +04
+
+--
+-- PostgreSQL database dump complete
+--
+
